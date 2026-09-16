@@ -9,19 +9,23 @@ import (
 	"strings"
 )
 
-const defaultVersion = 2
+// ProtocolVersion is the SimpleFIN protocol version this package speaks. It is
+// sent as the version query parameter on every /accounts request.
+const ProtocolVersion = "2"
 
-// Client is a SimpleFIN protocol client.
+// Client is a SimpleFIN protocol client bound to one access URL.
 type Client struct {
 	baseURL    *url.URL
 	username   string
 	password   string
 	httpClient *http.Client
-	version    int
 }
 
+// Option configures a Client.
 type Option func(*Client)
 
+// WithHTTPClient sets the *http.Client used for requests. Use it to configure
+// timeouts, transports, proxies, or test servers. A nil client is ignored.
 func WithHTTPClient(client *http.Client) Option {
 	return func(c *Client) {
 		if client != nil {
@@ -30,14 +34,9 @@ func WithHTTPClient(client *http.Client) Option {
 	}
 }
 
-func WithVersion(version int) Option {
-	return func(c *Client) {
-		if version != 0 {
-			c.version = version
-		}
-	}
-}
-
+// NewClient creates a Client from an access URL such as
+// "https://user:pass@bridge.simplefin.org/simplefin". The URL must be https
+// and must carry a username and password, which are used for HTTP Basic Auth.
 func NewClient(accessURL string, opts ...Option) (*Client, error) {
 	parsed, err := ParseAccessURL(accessURL)
 	if err != nil {
@@ -47,7 +46,7 @@ func NewClient(accessURL string, opts ...Option) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	c := &Client{baseURL: base, username: parsed.Username, password: parsed.Password, httpClient: http.DefaultClient, version: defaultVersion}
+	c := &Client{baseURL: base, username: parsed.Username, password: parsed.Password, httpClient: http.DefaultClient}
 	for _, opt := range opts {
 		opt(c)
 	}

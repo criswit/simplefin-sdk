@@ -8,13 +8,16 @@ import (
 	"net/url"
 )
 
+// CurrencyInfo describes a custom (non ISO 4217) currency such as reward
+// points or airline miles.
 type CurrencyInfo struct {
 	Name string `json:"name"`
 	Abbr string `json:"abbr"`
 }
 
-// CurrencyInfo fetches metadata for a custom SimpleFIN currency URL. Callers
-// should sanitize returned strings before displaying them in HTML or terminals.
+// CurrencyInfo fetches metadata for a custom currency URL found in
+// [Account.Currency]. The URL must be https. No credentials are sent. Callers
+// should sanitize the returned strings before displaying them.
 func (c *Client) CurrencyInfo(ctx context.Context, currencyURL string) (*CurrencyInfo, error) {
 	u, err := url.Parse(currencyURL)
 	if err != nil {

@@ -21,7 +21,9 @@ The protocol has four server endpoints:
 - `GET /info` - reports supported protocol versions.
 - `GET /accounts` - returns balances, transactions, connections, and protocol-level errors.
 
-This SDK implements the application side of the protocol: setup-token claiming, access URL parsing, HTTPS enforcement, Basic Auth, `/info`, `/accounts`, custom currency metadata lookup, typed HTTP errors, and v2 response models.
+This SDK implements the application side of the protocol: setup-token claiming, access URL parsing, HTTPS enforcement, Basic Auth, `/info`, `/accounts`, custom currency metadata lookup, typed HTTP errors, and v2 response models including the SimpleFIN Bridge extensions (holdings, payee, memo, merchant category code).
+
+The SDK speaks protocol version 2 only. Every `/accounts` request sends `version=2`. Protocol v1 (the `org` per account and unstructured `errors`) is not modeled; the Bridge has committed to v1 only until roughly March 2027.
 
 ```mermaid
 flowchart LR
@@ -108,7 +110,7 @@ On success, the server returns an access URL in the response body:
 https://username:password@bridge.simplefin.org/simplefin
 ```
 
-That URL contains Basic Auth credentials. Treat it like a secret and store it at least as securely as the financial data you fetch with it.
+That URL contains Basic Auth credentials. Treat it like a secret and store it at least as securely as the financial data you fetch with it. Printing an `AccessURL` with `%v`, `%+v`, `%#v`, or `%s` redacts the password; only the `Raw` field holds the full credential.
 
 On `403 Forbidden` while claiming, the SDK returns an error that matches `simplefin.ErrClaimTokenRejected` and also wraps `*simplefin.HTTPError`:
 
@@ -182,7 +184,6 @@ func main() {
     accounts, err := client.Accounts(ctx, simplefin.AccountsOptions{
         StartDate: &start,
         Pending:   true,
-        Version:   2,
     })
     if err != nil {
         log.Fatal(err)
@@ -190,6 +191,12 @@ func main() {
 
     for _, acct := range accounts.Accounts {
         fmt.Printf("%s %s %s\n", acct.Name, acct.Balance, acct.Currency)
+        for _, tx := range acct.Transactions {
+            fmt.Printf("  %s %s %s (%s)\n", tx.EffectiveTime().Format(time.DateOnly), tx.Amount, tx.Payee, tx.MCC)
+        }
+        for _, h := range acct.Holdings {
+            fmt.Printf("  %s x%s = %s\n", h.Symbol, h.Shares, h.MarketValue)
+        }
     }
 }
 ```
@@ -199,15 +206,15 @@ func main() {
 ```go
 client, err := simplefin.NewClient(
     accessURL,
-    simplefin.WithVersion(2),
     simplefin.WithHTTPClient(customHTTPClient),
 )
 ```
 
 Options:
 
-- `WithVersion(version int)` sets the default `version` query parameter for `/accounts`. The SDK defaults to protocol version `2`.
-- `WithHTTPClient(client *http.Client)` injects a custom HTTP client for timeouts, transports, tracing, tests, or proxies.
+- `WithHTTPClient(client *http.Client)` injects a custom HTTP client for timeouts, transports, tracing, tests, or proxies. The default is `http.DefaultClient`, which has no timeout, so production callers should pass their own.
+
+The protocol version is fixed at `simplefin.ProtocolVersion` (`"2"`) and is not configurable.
 
 Setup-token claiming has a separate HTTP client option:
 
@@ -239,9 +246,11 @@ type InfoResponse struct {
 }
 ```
 
+Note that the hosted Bridge reports only `["1.0"]` from `/info` even though it serves version 2, so `/info` cannot be used to detect v2 support.
+
 ## `/accounts`
 
-`Accounts` fetches account, balance, transaction, connection, and protocol-error data from `{accessURL}/accounts`:
+`Accounts` fetches account, balance, transaction, holding, connection, and protocol-error data from `{accessURL}/accounts`:
 
 ```go
 accountSet, err := client.Accounts(ctx, simplefin.AccountsOptions{
@@ -253,12 +262,12 @@ accountSet, err := client.Accounts(ctx, simplefin.AccountsOptions{
 })
 ```
 
-The SDK turns `AccountsOptions` into query parameters, sends Basic Auth from the access URL, and decodes the v2 `AccountSet` response:
+The SDK turns `AccountsOptions` into query parameters, always adds `version=2`, sends Basic Auth from the access URL, and decodes the v2 `AccountSet` response:
 
 ```mermaid
 flowchart TD
     A[client.Accounts(ctx, opts)] --> B[Build GET /accounts request]
-    B --> C[Add version query<br/>default: 2]
+    B --> C[Add version=2 query]
     B --> D[Add optional filters<br/>start-date, end-date, pending,<br/>account, balances-only]
     B --> E[Set HTTP Basic Auth<br/>from access URL credentials]
     C --> F[Send HTTPS request]
@@ -281,7 +290,6 @@ Supported query options:
 | `Pending` | `pending=1` | Ask the server to include pending transactions if supported. |
 | `AccountIDs` | repeated `account` | Restrict results to one or more account IDs. |
 | `BalancesOnly` | `balances-only=1` | Skip transaction data and return balances only. |
-| `Version` | `version` | Override the client's default protocol version for this request. |
 
 Bridge-specific operational notes:
 
@@ -306,7 +314,7 @@ type AccountSet struct {
 }
 ```
 
-In protocol v2, `errlist` is the structured error list. The older `errors` string list is deprecated but preserved by the SDK for compatibility.
+In protocol v2, `errlist` is the structured error list. The older `errors` string list is deprecated but preserved because the Bridge still uses it for rate-limit warnings.
 
 ```mermaid
 erDiagram
@@ -315,6 +323,7 @@ erDiagram
     AccountSet ||--o{ ProtocolError : reports
     Connection ||--o{ Account : "conn_id links"
     Account ||--o{ Transaction : contains
+    Account ||--o{ Holding : contains
 
     AccountSet {
         ProtocolError[] errlist
@@ -326,7 +335,7 @@ erDiagram
         string conn_id
         string name
         string org_id
-        string org_name
+        string org_name "Bridge extension"
         string org_url
         string sfin_url
     }
@@ -341,11 +350,25 @@ erDiagram
     }
     Transaction {
         string id
-        UnixTime posted
+        UnixTime posted "0 when pending"
         NumericString amount
         string description
+        string payee "Bridge extension"
+        string memo "Bridge extension"
+        string mcc "Bridge extension, ISO 18245"
         UnixTime transacted_at
         bool pending
+    }
+    Holding {
+        string id "Bridge extension"
+        UnixTime created
+        string currency
+        NumericString cost_basis
+        string description
+        NumericString market_value
+        NumericString purchase_price
+        NumericString shares
+        string symbol
     }
     ProtocolError {
         string code
@@ -368,19 +391,35 @@ if accountSet.HasErrors() {
 
 ### Protocol errors
 
-SimpleFIN protocol errors appear inside successful `/accounts` JSON responses. They are different from HTTP errors. Codes use prefixes:
+SimpleFIN protocol errors appear inside successful `/accounts` JSON responses. They are different from HTTP errors. Codes are `prefix.subcode`:
 
 - `gen.*` - general/server/API errors.
-- `con.*` - connection-level errors, often tied to a bank login.
-- `act.*` - account-level errors.
+- `con.*` - connection-level errors, carrying `conn_id`, often a bank login problem.
+- `act.*` - account-level errors, carrying `account_id`.
 
-Known examples include `gen.api`, `gen.auth`, `con.auth`, `act.failed`, and `act.missingdata`. Consumers should handle unknown subcodes by falling back to the prefix.
+The SDK exposes the codes the protocol defines as constants:
 
-Helpers:
+| Constant | Code | Meaning |
+| --- | --- | --- |
+| `CodeGeneral` | `gen.` | General error. |
+| `CodeGeneralAPI` | `gen.api` | API misuse; aimed at the developer. |
+| `CodeGeneralAuth` | `gen.auth` | Authentication failure to the SimpleFIN server. |
+| `CodeConnection` | `con.` | General connection error. |
+| `CodeConnectionAuth` | `con.auth` | The bank connection needs re-authentication. |
+| `CodeAccount` | `act.` | General account error. |
+| `CodeAccountFailed` | `act.failed` | Account fetch failed; retry later. |
+| `CodeAccountMissingData` | `act.missingdata` | Transaction listing incomplete; retry later. |
+
+Servers may add subcodes. The protocol asks consumers to treat an unknown subcode like the naked prefix, which `Normalized()` does:
 
 ```go
-pe.Prefix() // "gen", "con", or "act" for dotted/hyphenated code styles
-pe.IsAuth() // heuristic for auth/login/credential-related errors
+pe.Prefix()     // "gen", "con", or "act"
+pe.Subcode()    // "auth" for "con.auth"; "" for "con."
+pe.IsKnown()    // true for the codes in the table above
+pe.Normalized() // the code if known, otherwise "gen.", "con.", or "act."
+pe.Is(simplefin.CodeConnection)     // any con.* error
+pe.Is(simplefin.CodeConnectionAuth) // exactly con.auth
+pe.IsAuth()     // gen.auth or con.auth
 ```
 
 Always sanitize protocol error messages before displaying them in HTML, terminals, logs, or notifications.
@@ -403,11 +442,26 @@ type Account struct {
 }
 ```
 
-`UnixTime` values can be converted to `time.Time`:
+`UnixTime` values can be converted to `time.Time`. A zero `UnixTime` converts to the zero `time.Time`, not the Unix epoch. Pending transactions have `posted == 0`, so use the helpers:
 
 ```go
 balanceTime := account.BalanceTime()
-postedTime := transaction.PostedTime()
+transaction.IsPosted()        // false while pending
+transaction.PostedTime()      // zero time.Time while pending
+transaction.TransactedTime()  // zero time.Time when transacted_at is absent
+transaction.EffectiveTime()   // posted, else transacted_at, else zero
+```
+
+Transaction IDs are unique only within an account. Combine them with the account ID when deduplicating.
+
+### Holdings
+
+The SimpleFIN Bridge returns investment positions on each account as `holdings`. This is a Bridge extension, not part of the base protocol, so other servers may omit it:
+
+```go
+for _, h := range account.Holdings {
+    fmt.Println(h.Symbol, h.Shares, h.MarketValue, h.CostBasis, h.Currency, h.CreatedTime())
+}
 ```
 
 ## Custom currencies
@@ -517,18 +571,34 @@ All scripts reject non-HTTPS URLs. Avoid pasting access URLs into shared termina
 
 ## Integration testing
 
-Integration tests are guarded by the `integration` build tag and require an access URL:
+Integration tests are guarded by the `integration` build tag. They run against the public SimpleFIN Bridge demo server (`https://demo:demo@beta-bridge.simplefin.org/simplefin`) unless `SIMPLEFIN_ACCESS_URL` is set:
 
 ```bash
+go test -tags=integration ./...
+
 SIMPLEFIN_ACCESS_URL='https://user:pass@bridge.simplefin.org/simplefin' \
   go test -tags=integration ./...
 ```
+
+`testdata/accounts_v2.json` is a captured v2 response from that demo server and is decoded by the unit tests.
 
 Regular unit tests use local `httptest` servers:
 
 ```bash
 go test ./...
 ```
+
+## Development
+
+CI runs `gofmt`, `go vet`, `go test -race`, `govulncheck`, and the integration suite against the demo server. Run the same locally:
+
+```bash
+gofmt -l . && go vet ./... && go test -race ./...
+```
+
+## License
+
+MIT. See `LICENSE`.
 
 ## Protocol references
 

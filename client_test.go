@@ -7,25 +7,25 @@ import (
 
 func TestNewClientOptions(t *testing.T) {
 	hc := &http.Client{}
-	c, err := NewClient("https://u:p@example.com/root", WithHTTPClient(hc), WithVersion(7))
+	c, err := NewClient("https://u:p@example.com/root", WithHTTPClient(hc))
 	if err != nil {
 		t.Fatal(err)
-	}
-	if c.version != 7 {
-		t.Fatalf("version %d", c.version)
 	}
 	if c.httpClient != hc {
 		t.Fatal("custom client not used")
 	}
+	if c.endpoint("/accounts") != "https://example.com/root/accounts" {
+		t.Fatalf("endpoint %s", c.endpoint("/accounts"))
+	}
 }
 
 func TestNewClientDefaultsAndRejectsMalformed(t *testing.T) {
-	c, err := NewClient("https://u:p@example.com/root")
+	c, err := NewClient("https://u:p@example.com/root", WithHTTPClient(nil))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.version != 2 {
-		t.Fatalf("version %d", c.version)
+	if c.httpClient != http.DefaultClient {
+		t.Fatal("nil option should keep default client")
 	}
 	if _, err := NewClient("http://u:p@example.com/root"); err != ErrInsecureURL {
 		t.Fatalf("got %v", err)

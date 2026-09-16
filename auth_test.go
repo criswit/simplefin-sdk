@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -19,6 +21,27 @@ func TestParseAccessURL(t *testing.T) {
 	}
 	if a.BaseURL != "https://example.com/simplefin" {
 		t.Fatalf("base contains creds or wrong: %s", a.BaseURL)
+	}
+}
+
+func TestAccessURLRedactsPassword(t *testing.T) {
+	a, err := ParseAccessURL("https://demo:secret@example.com/simplefin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range []string{a.String(), a.GoString(), fmt.Sprint(a), fmt.Sprintf("%v", a), fmt.Sprintf("%+v", a), fmt.Sprintf("%#v", a), fmt.Sprintf("%s", a)} {
+		if strings.Contains(s, "secret") {
+			t.Fatalf("password leaked: %s", s)
+		}
+		if !strings.Contains(s, "demo") || !strings.Contains(s, "example.com") {
+			t.Fatalf("redacted form lost host or user: %s", s)
+		}
+	}
+	if a.Raw != "https://demo:secret@example.com/simplefin" {
+		t.Fatal("Raw must keep the full credential")
+	}
+	if (AccessURL{}).String() == "" {
+		t.Fatal("zero AccessURL should still print")
 	}
 }
 

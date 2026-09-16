@@ -37,10 +37,10 @@ func TestAccountsRequestAndResponse(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{
-			"errlist":[{"code":"act-auth","msg":"reauth","conn_id":"c1","account_id":"a1"}],
+			"errlist":[{"code":"act.failed","msg":"try later","conn_id":"c1","account_id":"a1"}],
 			"errors":["deprecated"],
 			"connections":[{"conn_id":"c1","name":"Conn","org_id":"org","org_name":"Org","org_url":"https://org.example","sfin_url":"https://sfin.example"}],
-			"accounts":[{"id":"a1","name":"Checking","conn_id":"c1","currency":"USD","balance":"123.4500","available-balance":"120.00","balance-date":100,"transactions":[{"id":"t1","posted":90,"amount":"-1.25","description":"Coffee","transacted_at":80,"pending":true,"extra":{"k":{"nested":1}}}],"extra":{"x":"y"}}]
+			"accounts":[{"id":"a1","name":"Checking","conn_id":"c1","currency":"USD","balance":"123.4500","available-balance":"120.00","balance-date":100,"transactions":[{"id":"t1","posted":90,"amount":"-1.25","description":"Coffee","payee":"Cafe","memo":"CAFE 001","mcc":"5812","transacted_at":80,"pending":true,"extra":{"k":{"nested":1}}}],"holdings":[{"id":"h1","created":50,"currency":"USD","cost_basis":"1.00","description":"Fund","market_value":"2.00","purchase_price":"0.50","shares":"2","symbol":"FND"}],"extra":{"x":"y"}}]
 		}`))
 	}))
 	defer s.Close()
@@ -58,8 +58,15 @@ func TestAccountsRequestAndResponse(t *testing.T) {
 	if as.Accounts[0].Balance != NumericString("123.4500") {
 		t.Fatalf("balance changed: %q", as.Accounts[0].Balance)
 	}
-	if as.Accounts[0].Transactions[0].TransactedAt == nil || !as.Accounts[0].Transactions[0].Pending {
-		t.Fatal("transaction optionals missing")
+	tx := as.Accounts[0].Transactions[0]
+	if tx.TransactedAt == nil || !tx.Pending || tx.Payee != "Cafe" || tx.Memo != "CAFE 001" || tx.MCC != "5812" {
+		t.Fatalf("transaction fields missing: %#v", tx)
+	}
+	if len(as.Accounts[0].Holdings) != 1 || as.Accounts[0].Holdings[0].Symbol != "FND" {
+		t.Fatalf("holdings missing: %#v", as.Accounts[0].Holdings)
+	}
+	if !as.ErrList[0].Is(CodeAccountFailed) || as.ErrList[0].Prefix() != PrefixAccount {
+		t.Fatalf("errlist decode: %#v", as.ErrList[0])
 	}
 }
 

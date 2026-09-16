@@ -10,8 +10,11 @@ func TestErrorStrings(t *testing.T) {
 	if !strings.Contains(he, "500 Internal Server Error") || !strings.Contains(he, "boom") {
 		t.Fatalf("bad HTTPError: %s", he)
 	}
-	pe := ProtocolErrors{{Code: "gen-error", Message: "bad"}, {Code: "act-auth"}}.Error()
-	if !strings.Contains(pe, "gen-error: bad") || !strings.Contains(pe, "act-auth") {
+	pe := ProtocolErrors{{Code: CodeGeneral, Message: "bad"}, {Code: CodeConnectionAuth}}.Error()
+	if !strings.Contains(pe, "gen.: bad") || !strings.Contains(pe, "con.auth") {
 		t.Fatalf("bad ProtocolErrors: %s", pe)
+	}
+	if ProtocolErrors(nil).Error() == "" {
+		t.Fatal("empty ProtocolErrors should still describe itself")
 	}
 }
